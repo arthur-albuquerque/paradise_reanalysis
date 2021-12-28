@@ -1,0 +1,227 @@
+---
+title: "Bayesian reanalysis: PARADISE-MI"
+author: "Arthur M. Albuquerque"
+date: '`r format(Sys.Date(), "%B %d, %Y")`'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+	echo = FALSE,
+	message = FALSE,
+	warning = FALSE
+)
+```
+
+```{r}
+# Ensures the package "pacman" is installed
+if (!require("pacman")) install.packages("pacman")
+
+pacman::p_load(ggplot2,
+               ggdist,
+               patchwork,
+               dplyr,
+               gt)
+
+pacman::p_install_gh("BlakeRMills/MetBrewer")
+```
+
+Following the guidelines suggested by [Zampieri et al.](https://www.atsjournals.org/doi/10.1164/rccm.202006-2381CP), we performed a Bayesian reanalysis of the [PARADISE-MI RCT](https://www.nejm.org/doi/full/10.1056/NEJMoa2104508) with multiple priors.
+
+Based on a [previous meta-analysis](https://onlinelibrary.wiley.com/doi/10.1002/ehf2.13677), we will follow Zampieri's Table 2 scenario, "Evidence pointing toward benefit (for example, positive previous metanalysis). No outliers in previous literature.". Thus, we applied the following priors:
+
+* Vague
+* Skeptical, moderate strength
+* Optimistic, moderate strength
+* Pessimistic, weak strength
+
+
+```{r}
+# Data
+PARADISE_mean = log(0.90)
+PARADISE_SE = (log(1.04) - log(0.78))/(2*1.96)
+
+# Priors
+mean_vague = log(1)
+mean_skeptical = log(1)
+mean_optimistic = log(0.81)
+mean_pessimistic = log(1/0.81)
+
+# SD calculations based on the formula provided in 
+# https://hbiostat.org/R/rmsb/rmsbGraphics.html
+sd_vague = 5
+sd_skeptical = (mean_skeptical - log(0.5))/qnorm(1-0.025)
+sd_optimistic = (log(1) - mean_optimistic)/qnorm(1-0.15)
+sd_pessimistic = (mean_pessimistic - log(1))/qnorm(1-0.3)
+
+```
+
+```{r}
+post.normal.mean <- function(prior.mean, prior.var, data.mean, data.var)
+{
+  post.mean.numerator = prior.mean/prior.var + data.mean/data.var
+  post.mean.denominator = 1/prior.var + 1/data.var
+  post.mean =  post.mean.numerator/post.mean.denominator
+  post.var = (1/(1/prior.var + 1/data.var))
+  draws = data.frame(draws = rnorm(n = 10e4,
+                                   mean = post.mean,
+                                   sd = sqrt(post.var)))
+  return(draws)
+}
+
+set.seed(123)
+
+posterior_vague = post.normal.mean(prior.mean = mean_vague,
+                                   prior.var = sd_vague^2,
+                                   data.mean = PARADISE_mean,
+                                   data.var = PARADISE_SE^2)
+
+posterior_skeptical = post.normal.mean(prior.mean = mean_skeptical,
+                                       prior.var = sd_skeptical^2,
+                                       data.mean = PARADISE_mean,
+                                       data.var = PARADISE_SE^2)
+
+posterior_optimistic = post.normal.mean(prior.mean = mean_optimistic,
+                                        prior.var = sd_optimistic^2,
+                                        data.mean = PARADISE_mean,
+                                        data.var = PARADISE_SE^2)
+
+posterior_pessimistic = post.normal.mean(prior.mean = mean_pessimistic,
+                                         prior.var = sd_pessimistic^2,
+                                         data.mean = PARADISE_mean,
+                                         data.var = PARADISE_SE^2)
+```
+
+```{r}
+
+plot_fun = function(posterior, color, mean_prior, sd_prior, header){
+  posterior |> 
+  ggplot(aes(x = draws,
+             fill_ramp = stat(x < log(1)))
+         ) +
+  # Only posterior with  ggdist::stat_halfeye()
+  ggdist::stat_halfeye(fill = color, # distribution fill
+                       # very important so all distributions are comparable
+                       normalize = "none", 
+                       .width = 0.95, # 95% CrI
+                       point_interval = ggdist::mean_qi
+                       ) +
+  # To fill posterior distribution OR > 1 as gray
+  ggdist::scale_fill_ramp_discrete(from = "gray85", range = c(0,1)) +
+  
+  # Prior 
+  stat_function(fun = dnorm,
+                args = c(mean = mean_prior,
+                         sd = sd_prior),
+                alpha = 0.8, color = "gray50", linetype = 1, size = 1) + 
+    
+  geom_vline(xintercept = log(1), linetype = 2) +
+  scale_y_continuous(limits = c(0, 6),
+                     breaks = seq(0, 6, 2),
+                     expand = c(0, 0.3)) +
+  scale_x_continuous(breaks = log(c(seq(0.6, 1, 0.1), seq(1, 1.6, 0.2))),
+                     limits = log(c(0.55, 1.6)),
+                     labels = c(seq(0.6, 1, 0.1), seq(1, 1.6, 0.2))) +
+  labs(x = "Hazard Ratio (log scale)",
+       y = "Density",
+       title = header) +
+  ggdist::theme_ggdist() +
+  theme(legend.position = 'none',
+        plot.title = element_text(hjust = 0.5), # centralize title
+        plot.margin = margin(20, 20, 20, 20))
+}
+```
+
+### Results
+
+```{r fig.width=8, fig.align='center', fig.cap="Priors and posteriors distributions; Each underlying belief is labeled on top of each panel. Color filled curves represent the posterior distributions. Color filled areas represent the posterior probability of superiority of sacubitril–valsartan over ramipril and standard of care (HR < 1.0). Interval bars depict the posterior median and 95% credible intervals. Solid gray lines represent underlying prior distributions (Normal[mean, SD]). Vague prior: N(0, 5); Skeptical prior: N(0, 0.35); Optimistic prior: N(-0.21, 0.20); Pessimistic prior:  N(0.21, 0.40)"}
+
+
+
+pal = MetBrewer::met.brewer(name="Degas",n=7,type="discrete")
+
+p1 = plot_fun(posterior = posterior_vague,
+              color = pal[4],
+              mean_prior = mean_vague,
+              sd_prior = sd_vague,
+              header = "Vague")
+
+p2 = plot_fun(posterior = posterior_skeptical,
+              color = pal[3],
+              mean_prior = mean_skeptical,
+              sd_prior = sd_skeptical,
+              header = "Skeptical")
+
+p3 = plot_fun(posterior = posterior_optimistic,
+              color = pal[5],
+              mean_prior = mean_optimistic,
+              sd_prior = sd_optimistic,
+              header = "Optimistic")
+
+p4 = plot_fun(posterior = posterior_pessimistic,
+              color = pal[2],
+              mean_prior = mean_pessimistic,
+              sd_prior = sd_pessimistic,
+              header = "Pessimistic")
+
+(p1 + p2)/(p3 + p4)
+```
+
+<br><br>
+
+
+```{r}
+CIs = 
+  data.frame("Vague" = posterior_vague[,1],
+           "Skeptical" = posterior_skeptical[,1],
+           "Optimistic" = posterior_optimistic[,1],
+           "Pessimistic" = posterior_pessimistic[,1]) |> 
+  tidyr::pivot_longer(1:4, names_to = "Belief") |> 
+  dplyr::group_by(Belief) |> 
+  ggdist::median_qi(exp(value)) |> 
+  dplyr::mutate(dplyr::across(2:4, ~round(.,2)),
+                "Median (95% CrI)" =
+                  stringr::str_c(`exp(value)`,
+                                 " (", `.lower`, ", ", `.upper`, ")")) |> 
+  dplyr::select(1, 8)
+```
+
+```{r}
+probs = 
+  data.frame("Vague" = posterior_vague[,1],
+           "Skeptical" = posterior_skeptical[,1],
+           "Optimistic" = posterior_optimistic[,1],
+           "Pessimistic" = posterior_pessimistic[,1]) |> 
+  tidyr::pivot_longer(1:4, names_to = "Belief") |> 
+  dplyr::group_by(Belief) |> 
+  dplyr::summarise("Pr(HR < 1.0)" = mean(value < log(1)),
+                   "Pr(HR < 0.9)" = mean(value < log(0.9)),
+                   "Pr(ROPE)" = mean(value > log(0.9) & value < log(1/0.9)))
+
+dplyr::left_join(CIs, probs) |> 
+  dplyr::mutate(dplyr::across(3:5, ~round(.*100,1)),
+                Belief = factor(Belief,
+                                levels = c("Vague",
+                                           "Skeptical",
+                                           "Optimistic",
+                                           "Pessimistic"))) |> 
+  dplyr::arrange(Belief) |> 
+  gt::gt() |> 
+  gt::tab_spanner(label = "Posterior Probability, %",
+              columns = 3:5) |> 
+  gt::tab_footnote(
+    footnote = "ROPE was defined as between 0.9 and 1.11",
+    locations = cells_column_labels(
+      columns = c("Pr(ROPE)")
+    )
+    ) |>
+  gt::tab_source_note(
+    source_note =
+      md("Abbreviations: CrI, credible interval; HR, hazard ratio; ROPE, range of practical equivalence")
+  )
+```
+
+<br><br>
+
+
+
